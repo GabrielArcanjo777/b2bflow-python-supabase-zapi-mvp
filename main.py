@@ -1,4 +1,5 @@
 import os
+import time
 from typing import Any
 
 import requests
@@ -6,7 +7,10 @@ from dotenv import load_dotenv
 
 
 MESSAGE_TEMPLATE = "Olá, {nome} tudo bem com você?"
-CONTACT_LIMIT = 3
+CONTACT_LIMIT_MAX = 3
+DEFAULT_REQUEST_TIMEOUT = 15.0
+DEFAULT_SEND_DELAY_SECONDS = 1.0
+TRUE_VALUES = {"1", "true", "yes", "y", "sim", "s"}
 
 
 def get_required_env(name: str) -> str:
@@ -16,11 +20,56 @@ def get_required_env(name: str) -> str:
     return value
 
 
+def get_bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in TRUE_VALUES
+
+
+def get_int_env(name: str, default: int, minimum: int = 1) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"Variável {name} deve ser um número inteiro.") from exc
+
+    if parsed < minimum:
+        raise RuntimeError(f"Variável {name} deve ser maior ou igual a {minimum}.")
+    return parsed
+
+
+def get_float_env(name: str, default: float, minimum: float = 0.0) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise RuntimeError(f"Variável {name} deve ser numérica.") from exc
+
+    if parsed < minimum:
+        raise RuntimeError(f"Variável {name} deve ser maior ou igual a {minimum}.")
+    return parsed
+
+
+def mask_phone(phone: str) -> str:
+    digits = "".join(char for char in phone if char.isdigit())
+    if len(digits) <= 4:
+        return "*" * len(digits)
+    return f"{'*' * (len(digits) - 4)}{digits[-4:]}"
+
+
 def fetch_contacts(
     supabase_url: str,
     supabase_key: str,
     table_name: str,
-    limit: int = CONTACT_LIMIT,
+    limit: int,
+    timeout: float,
 ) -> list[dict[str, Any]]:
     base_url = supabase_url.rstrip("/")
     url = f"{base_url}/rest/v1/{table_name}"
@@ -33,9 +82,22 @@ def fetch_contacts(
         "limit": str(limit),
     }
 
-    response = requests.get(url, headers=headers, params=params, timeout=15)
-    response.raise_for_status()
-    return response.json()
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=timeout)
+    except requests.RequestException as exc:
+        raise RuntimeError("Falha ao buscar contatos no Supabase.") from exc
+
+    if not response.ok:
+        raise RuntimeError(f"Supabase retornou HTTP {response.status_code}.")
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Supabase retornou uma resposta inválida.") from exc
+
+    if not isinstance(data, list):
+        raise RuntimeError("Resposta inesperada do Supabase.")
+    return data
 
 
 def build_message(contact_name: str) -> str:
@@ -48,6 +110,7 @@ def send_text_message(
     client_token: str,
     phone: str,
     message: str,
+    timeout: float,
 ) -> None:
     url = f"https://api.z-api.io/instances/{instance_id}/token/{token}/send-text"
     headers = {
@@ -59,8 +122,13 @@ def send_text_message(
         "message": message,
     }
 
-    response = requests.post(url, headers=headers, json=payload, timeout=15)
-    response.raise_for_status()
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    except requests.RequestException as exc:
+        raise RuntimeError("Falha ao enviar mensagem pela Z-API.") from exc
+
+    if not response.ok:
+        raise RuntimeError(f"Z-API retornou HTTP {response.status_code}.")
 
 
 def main() -> None:
@@ -69,11 +137,39 @@ def main() -> None:
     supabase_url = get_required_env("SUPABASE_URL")
     supabase_key = get_required_env("SUPABASE_KEY")
     table_name = os.getenv("SUPABASE_TABLE", "contacts")
-    zapi_instance_id = get_required_env("ZAPI_INSTANCE_ID")
-    zapi_token = get_required_env("ZAPI_TOKEN")
-    zapi_client_token = get_required_env("ZAPI_CLIENT_TOKEN")
+    dry_run = get_bool_env("DRY_RUN", default=True)
+    contact_limit = min(
+        get_int_env("CONTACT_LIMIT", default=CONTACT_LIMIT_MAX),
+        CONTACT_LIMIT_MAX,
+    )
+    request_timeout = get_float_env(
+        "REQUEST_TIMEOUT",
+        default=DEFAULT_REQUEST_TIMEOUT,
+        minimum=1.0,
+    )
+    send_delay = get_float_env(
+        "SEND_DELAY_SECONDS",
+        default=DEFAULT_SEND_DELAY_SECONDS,
+        minimum=0.0,
+    )
 
-    contacts = fetch_contacts(supabase_url, supabase_key, table_name)
+    zapi_instance_id = ""
+    zapi_token = ""
+    zapi_client_token = ""
+    if not dry_run:
+        zapi_instance_id = get_required_env("ZAPI_INSTANCE_ID")
+        zapi_token = get_required_env("ZAPI_TOKEN")
+        zapi_client_token = get_required_env("ZAPI_CLIENT_TOKEN")
+    else:
+        print("DRY_RUN ativo: nenhuma mensagem real será enviada.")
+
+    contacts = fetch_contacts(
+        supabase_url=supabase_url,
+        supabase_key=supabase_key,
+        table_name=table_name,
+        limit=contact_limit,
+        timeout=request_timeout,
+    )
     if not contacts:
         print("Nenhum contato encontrado.")
         return
@@ -86,15 +182,26 @@ def main() -> None:
             continue
 
         message = build_message(name)
+        safe_phone = mask_phone(phone)
+
+        if dry_run:
+            print(f"[DRY_RUN] {name} ({safe_phone}): {message}")
+            continue
+
         send_text_message(
             instance_id=zapi_instance_id,
             token=zapi_token,
             client_token=zapi_client_token,
             phone=phone,
             message=message,
+            timeout=request_timeout,
         )
-        print(f"Mensagem enviada para {name}.")
+        print(f"Mensagem enviada para {name} ({safe_phone}).")
+        time.sleep(send_delay)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as error:
+        print(f"Erro: {error}")
