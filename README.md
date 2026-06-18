@@ -8,7 +8,7 @@ A mensagem enviada é:
 Olá, <nome_contato> tudo bem com você?
 ```
 
-O projeto foi mantido propositalmente simples para facilitar revisão em entrevista: execução local, variáveis de ambiente, modo seguro de simulação e limite máximo de três contatos por execução.
+O projeto roda localmente, usa variáveis de ambiente para credenciais e vem com `DRY_RUN=true` para testar sem enviar mensagens reais.
 
 ## Tecnologias
 
@@ -27,14 +27,12 @@ O projeto foi mantido propositalmente simples para facilitar revisão em entrevi
 ├── setup.sql
 ├── .env.example
 ├── .gitignore
-├── README.md
-├── COMMITS.md
-└── PROMPTS_CODEX.md
+└── README.md
 ```
 
 ## Configurar a tabela no Supabase
 
-No Supabase, acesse **SQL Editor** e execute o arquivo `setup.sql`.
+No Supabase, acesse **SQL Editor** e execute o conteúdo do arquivo `setup.sql`.
 
 A tabela esperada é `public.contacts`, com os campos:
 
@@ -61,7 +59,7 @@ No Windows, se preferir:
 copy .env.example .env
 ```
 
-Preencha o `.env` local com seus dados:
+Preencha o `.env` local:
 
 ```env
 SUPABASE_URL=https://seu-projeto.supabase.co
@@ -79,7 +77,7 @@ REQUEST_TIMEOUT=15
 SEND_DELAY_SECONDS=1
 ```
 
-O arquivo `.env` não deve ser commitado. O repositório deve conter apenas `.env.example`.
+O arquivo `.env` deve ficar apenas na máquina local e não deve ser commitado.
 
 ## Instalar dependências
 
@@ -107,42 +105,33 @@ Instale as dependências:
 pip install -r requirements.txt
 ```
 
-## Rodar em modo simulação
+## Executar o projeto
 
-Mantenha `DRY_RUN=true` no `.env` e execute:
+Com `DRY_RUN=true` no `.env`, rode:
 
 ```bash
 python main.py
 ```
 
-Nesse modo o projeto busca até três contatos, monta a mensagem e mostra no terminal o que seria enviado. Nenhuma mensagem real é disparada.
+Nesse modo seguro, o projeto busca até três contatos, monta a mensagem personalizada e mostra no terminal o que seria enviado. Nenhuma mensagem real é disparada.
 
-## Enviar mensagens reais
-
-Depois de validar com contatos próprios ou autorizados, altere no `.env`:
+Para enviar mensagens reais, use apenas contatos próprios ou autorizados, altere no `.env`:
 
 ```env
 DRY_RUN=false
 ```
 
-Execute novamente:
+Depois execute novamente:
 
 ```bash
 python main.py
 ```
 
-Os telefones exibidos no terminal são mascarados para evitar exposição completa nos logs.
-
-## Segurança
+## Cuidados com credenciais
 
 - `.env` está no `.gitignore`.
-- Credenciais ficam apenas em variáveis de ambiente.
-- `DRY_RUN=true` é o padrão recomendado para testes.
-- O envio é limitado a no máximo três contatos por execução.
+- O repositório deve conter apenas `.env.example`.
+- Credenciais devem ficar somente em variáveis de ambiente.
+- Não use dados reais em `setup.sql` ou na documentação.
+- O código mascara telefones nos logs.
 - Telefones duplicados são ignorados antes do envio.
-- O código não registra telefone completo nos logs.
-- `setup.sql` não inclui dados reais.
-
-## Histórico de commits
-
-O arquivo `COMMITS.md` contém uma sequência sugerida de commits pequenos e objetivos para explicar a evolução do MVP.
