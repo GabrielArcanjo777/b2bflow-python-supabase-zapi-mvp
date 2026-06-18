@@ -1,5 +1,7 @@
+import logging
 import os
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import requests
@@ -11,6 +13,12 @@ CONTACT_LIMIT_MAX = 3
 DEFAULT_REQUEST_TIMEOUT = 15.0
 DEFAULT_SEND_DELAY_SECONDS = 1.0
 TRUE_VALUES = {"1", "true", "yes", "y", "sim", "s"}
+
+
+@dataclass(frozen=True)
+class Contact:
+    nome: str
+    telefone: str
 
 
 def get_required_env(name: str) -> str:
@@ -57,8 +65,12 @@ def get_float_env(name: str, default: float, minimum: float = 0.0) -> float:
     return parsed
 
 
+def normalize_phone(phone: str) -> str:
+    return "".join(char for char in phone if char.isdigit())
+
+
 def mask_phone(phone: str) -> str:
-    digits = "".join(char for char in phone if char.isdigit())
+    digits = normalize_phone(phone)
     if len(digits) <= 4:
         return "*" * len(digits)
     return f"{'*' * (len(digits) - 4)}{digits[-4:]}"
@@ -70,7 +82,7 @@ def fetch_contacts(
     table_name: str,
     limit: int,
     timeout: float,
-) -> list[dict[str, Any]]:
+) -> list[Contact]:
     base_url = supabase_url.rstrip("/")
     url = f"{base_url}/rest/v1/{table_name}"
     headers = {
@@ -79,7 +91,6 @@ def fetch_contacts(
     }
     params = {
         "select": "nome,telefone",
-        "limit": str(limit),
     }
 
     try:
@@ -97,7 +108,36 @@ def fetch_contacts(
 
     if not isinstance(data, list):
         raise RuntimeError("Resposta inesperada do Supabase.")
-    return data
+
+    contacts: list[Contact] = []
+    used_phones: set[str] = set()
+
+    for row in data:
+        if not isinstance(row, dict):
+            logging.warning("Contato ignorado por formato inválido.")
+            continue
+
+        nome = str(row.get("nome", "")).strip()
+        telefone = normalize_phone(str(row.get("telefone", "")))
+
+        if not nome or not telefone:
+            logging.warning("Contato ignorado por nome/telefone ausente ou inválido.")
+            continue
+
+        if telefone in used_phones:
+            logging.warning(
+                "Contato ignorado por telefone duplicado: %s",
+                mask_phone(telefone),
+            )
+            continue
+
+        used_phones.add(telefone)
+        contacts.append(Contact(nome=nome, telefone=telefone))
+
+        if len(contacts) >= limit:
+            break
+
+    return contacts
 
 
 def build_message(contact_name: str) -> str:
@@ -132,6 +172,7 @@ def send_text_message(
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     load_dotenv()
 
     supabase_url = get_required_env("SUPABASE_URL")
@@ -175,11 +216,8 @@ def main() -> None:
         return
 
     for contact in contacts:
-        name = str(contact.get("nome", "")).strip()
-        phone = str(contact.get("telefone", "")).strip()
-        if not name or not phone:
-            print("Contato ignorado por falta de nome ou telefone.")
-            continue
+        name = contact.nome
+        phone = contact.telefone
 
         message = build_message(name)
         safe_phone = mask_phone(phone)

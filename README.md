@@ -139,6 +139,7 @@ Os telefones exibidos no terminal são mascarados para evitar exposição comple
 - Credenciais ficam apenas em variáveis de ambiente.
 - `DRY_RUN=true` é o padrão recomendado para testes.
 - O envio é limitado a no máximo três contatos por execução.
+- Telefones duplicados são ignorados antes do envio.
 - O código não registra telefone completo nos logs.
 - `setup.sql` não inclui dados reais.
 
