@@ -42,12 +42,36 @@ def build_message(contact_name: str) -> str:
     return MESSAGE_TEMPLATE.format(nome=contact_name.strip())
 
 
+def send_text_message(
+    instance_id: str,
+    token: str,
+    client_token: str,
+    phone: str,
+    message: str,
+) -> None:
+    url = f"https://api.z-api.io/instances/{instance_id}/token/{token}/send-text"
+    headers = {
+        "Client-Token": client_token,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "phone": phone,
+        "message": message,
+    }
+
+    response = requests.post(url, headers=headers, json=payload, timeout=15)
+    response.raise_for_status()
+
+
 def main() -> None:
     load_dotenv()
 
     supabase_url = get_required_env("SUPABASE_URL")
     supabase_key = get_required_env("SUPABASE_KEY")
     table_name = os.getenv("SUPABASE_TABLE", "contacts")
+    zapi_instance_id = get_required_env("ZAPI_INSTANCE_ID")
+    zapi_token = get_required_env("ZAPI_TOKEN")
+    zapi_client_token = get_required_env("ZAPI_CLIENT_TOKEN")
 
     contacts = fetch_contacts(supabase_url, supabase_key, table_name)
     if not contacts:
@@ -62,7 +86,14 @@ def main() -> None:
             continue
 
         message = build_message(name)
-        print(f"Mensagem preparada para {name}: {message}")
+        send_text_message(
+            instance_id=zapi_instance_id,
+            token=zapi_token,
+            client_token=zapi_client_token,
+            phone=phone,
+            message=message,
+        )
+        print(f"Mensagem enviada para {name}.")
 
 
 if __name__ == "__main__":
