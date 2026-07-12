@@ -13,3 +13,14 @@ comment on column public.contacts.nome is
 
 comment on column public.contacts.telefone is
   'Telefone em formato internacional, somente dígitos. Use apenas dados fictícios, próprios ou autorizados.';
+
+-- Tabelas criadas pelo SQL Editor precisam de RLS habilitado manualmente.
+-- Sem políticas públicas, somente uma chave secreta de backend/service role
+-- deve acessar os contatos usados pelo worker local.
+alter table public.contacts enable row level security;
+
+revoke all privileges on table public.contacts
+  from anon, authenticated;
+
+revoke all privileges on sequence public.contacts_id_seq
+  from anon, authenticated;

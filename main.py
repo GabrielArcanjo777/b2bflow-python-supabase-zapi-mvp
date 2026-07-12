@@ -1,8 +1,9 @@
+import base64
+import json
 import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any
 
 import requests
 from dotenv import load_dotenv
@@ -13,6 +14,8 @@ CONTACT_LIMIT_MAX = 3
 DEFAULT_REQUEST_TIMEOUT = 15.0
 DEFAULT_SEND_DELAY_SECONDS = 1.0
 TRUE_VALUES = {"1", "true", "yes", "y", "sim", "s"}
+FALSE_VALUES = {"0", "false", "no", "n", "nao", "não"}
+LIVE_SEND_CONFIRMATION = "I_UNDERSTAND"
 
 
 @dataclass(frozen=True)
@@ -32,7 +35,52 @@ def get_bool_env(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
-    return value.strip().lower() in TRUE_VALUES
+
+    normalized = value.strip().lower()
+    if normalized in TRUE_VALUES:
+        return True
+    if normalized in FALSE_VALUES:
+        return False
+    raise RuntimeError(
+        f"Variável {name} deve usar um valor booleano explícito "
+        "(true/false, 1/0, yes/no ou sim/não)."
+    )
+
+
+def get_jwt_role(token: str) -> str | None:
+    """Lê somente o papel declarado no payload JWT, sem validar o token."""
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+
+    try:
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        decoded = base64.urlsafe_b64decode(payload.encode("ascii"))
+        data = json.loads(decoded)
+    except (UnicodeError, ValueError, json.JSONDecodeError):
+        return None
+
+    role = data.get("role")
+    return role if isinstance(role, str) else None
+
+
+def validate_supabase_backend_key(key: str) -> str:
+    """Rejeita chaves reconhecidamente destinadas a clientes públicos."""
+    if key.startswith("sb_publishable_") or get_jwt_role(key) == "anon":
+        raise RuntimeError(
+            "SUPABASE_KEY não pode ser uma chave publishable/anon. "
+            "Use uma chave secreta apenas neste worker de backend."
+        )
+    return key
+
+
+def require_live_send_confirmation() -> None:
+    confirmation = os.getenv("LIVE_SEND_CONFIRM", "")
+    if confirmation != LIVE_SEND_CONFIRMATION:
+        raise RuntimeError(
+            "Envio real bloqueado. Defina "
+            f"LIVE_SEND_CONFIRM={LIVE_SEND_CONFIRMATION} para confirmar."
+        )
 
 
 def get_int_env(name: str, default: int, minimum: int = 1) -> int:
@@ -89,8 +137,10 @@ def fetch_contacts(
         "apikey": supabase_key,
         "Authorization": f"Bearer {supabase_key}",
     }
-    params = {
+    params: dict[str, str | int] = {
         "select": "nome,telefone",
+        "limit": limit,
+        "order": "created_at.asc",
     }
 
     try:
@@ -176,7 +226,7 @@ def main() -> None:
     load_dotenv()
 
     supabase_url = get_required_env("SUPABASE_URL")
-    supabase_key = get_required_env("SUPABASE_KEY")
+    supabase_key = validate_supabase_backend_key(get_required_env("SUPABASE_KEY"))
     table_name = os.getenv("SUPABASE_TABLE", "contacts")
     dry_run = get_bool_env("DRY_RUN", default=True)
     contact_limit = min(
@@ -194,15 +244,13 @@ def main() -> None:
         minimum=0.0,
     )
 
-    zapi_instance_id = ""
-    zapi_token = ""
-    zapi_client_token = ""
-    if not dry_run:
+    if dry_run:
+        print("DRY_RUN ativo: nenhuma mensagem real será enviada.")
+    else:
+        require_live_send_confirmation()
         zapi_instance_id = get_required_env("ZAPI_INSTANCE_ID")
         zapi_token = get_required_env("ZAPI_TOKEN")
         zapi_client_token = get_required_env("ZAPI_CLIENT_TOKEN")
-    else:
-        print("DRY_RUN ativo: nenhuma mensagem real será enviada.")
 
     contacts = fetch_contacts(
         supabase_url=supabase_url,
@@ -243,3 +291,4 @@ if __name__ == "__main__":
         main()
     except RuntimeError as error:
         print(f"Erro: {error}")
+        raise SystemExit(1) from error
