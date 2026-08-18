@@ -1,156 +1,127 @@
-# b2bflow Python + Supabase + Z-API
+# B2BFlow — Supabase + Z-API
 
-MVP técnico em Python para ler contatos autorizados no Supabase e enviar uma mensagem personalizada via Z-API.
+Worker em Python para consultar contatos autorizados no Supabase e enviar mensagens personalizadas pela Z-API. O modo seguro (`DRY_RUN=true`) vem ativado por padrão, permitindo validar configuração e conteúdo sem realizar envios.
 
-A mensagem enviada é:
+## Objetivo
 
-```txt
-Olá, <nome_contato> tudo bem com você?
+Demonstrar uma integração de backend pequena, testável e orientada a segurança:
+
+- credenciais carregadas por variáveis de ambiente;
+- limite máximo de três contatos por execução;
+- rejeição de chaves públicas do Supabase;
+- confirmação explícita antes de qualquer envio real;
+- telefones mascarados nos logs;
+- contatos inválidos ou duplicados ignorados;
+- timeouts e erros externos tratados.
+
+## Fluxo
+
+```text
+Configuração
+    ↓
+Supabase REST API
+    ↓
+Validação e deduplicação
+    ↓
+Composição da mensagem
+    ↓
+DRY_RUN ── sim ──> prévia segura no terminal
+    │
+    não
+    ↓
+confirmação explícita + Z-API
 ```
 
-O projeto roda localmente, usa variáveis de ambiente para credenciais e vem com `DRY_RUN=true` para testar sem enviar mensagens reais.
+## Decisões de código
 
-## Tecnologias
+O contato é imutável, evitando alterações acidentais durante o processamento:
 
-- Python
-- Supabase REST API
-- Z-API
-- python-dotenv
-- requests
-
-## Estrutura
-
-```txt
-.
-├── main.py
-├── requirements.txt
-├── setup.sql
-├── tests/
-├── .github/workflows/ci.yml
-├── .env.example
-├── .gitignore
-└── README.md
+```python
+@dataclass(frozen=True)
+class Contact:
+    nome: str
+    telefone: str
 ```
 
-## Configurar a tabela no Supabase
+O telefone é normalizado em um único ponto. A mesma regra é reutilizada na validação, na deduplicação e no mascaramento dos logs:
 
-No Supabase, acesse **SQL Editor** e execute o conteúdo do arquivo `setup.sql`.
-
-O script habilita **Row Level Security (RLS)** e remove o acesso dos papéis públicos `anon` e `authenticated`. Se a tabela já existia, execute novamente a versão atual do `setup.sql` para aplicar esse endurecimento.
-
-A tabela esperada é `public.contacts`, com os campos:
-
-| Campo | Descrição |
-|---|---|
-| `id` | Identificador gerado pelo banco |
-| `nome` | Nome usado para personalizar a mensagem |
-| `telefone` | Telefone em formato internacional, somente dígitos |
-| `created_at` | Data de criação do registro |
-
-Use apenas contatos fictícios, próprios ou explicitamente autorizados. Não coloque números reais no repositório.
-
-## Configurar variáveis de ambiente
-
-Copie o arquivo de exemplo:
-
-```bash
-cp .env.example .env
+```python
+def normalize_phone(phone: str) -> str:
+    return "".join(char for char in phone if char.isdigit())
 ```
 
-No Windows, se preferir:
-
-```powershell
-copy .env.example .env
-```
-
-Preencha o `.env` local:
-
-```env
-SUPABASE_URL=https://seu-projeto.supabase.co
-SUPABASE_KEY=sua_chave_secreta_de_backend
-SUPABASE_TABLE=contacts
-
-CONTACT_LIMIT=3
-DRY_RUN=true
-LIVE_SEND_CONFIRM=
-
-ZAPI_INSTANCE_ID=sua_instancia
-ZAPI_TOKEN=seu_token_zapi
-ZAPI_CLIENT_TOKEN=seu_client_token_zapi
-
-REQUEST_TIMEOUT=15
-SEND_DELAY_SECONDS=1
-```
-
-O arquivo `.env` deve ficar apenas na máquina local e não deve ser commitado. `SUPABASE_KEY` precisa ser uma chave **secret/backend** usada somente por este worker; nunca use uma chave `publishable` ou `anon` para acessar os contatos.
-
-## Instalar dependências
-
-Crie e ative um ambiente virtual:
-
-```bash
-python -m venv .venv
-```
-
-Windows:
-
-```powershell
-.venv\Scripts\activate
-```
-
-Linux/macOS:
-
-```bash
-source .venv/bin/activate
-```
-
-Instale as dependências:
-
-```bash
-pip install -r requirements.txt
-```
-
-## Executar o projeto
-
-Com `DRY_RUN=true` no `.env`, rode:
-
-```bash
-python main.py
-```
-
-Nesse modo seguro, o projeto busca até três contatos, monta a mensagem personalizada e mostra no terminal o que seria enviado. Nenhuma mensagem real é disparada. Valores inválidos em `DRY_RUN`, como erros de digitação, interrompem a execução.
-
-Para enviar mensagens reais, use apenas contatos próprios ou autorizados, altere no `.env`:
+O envio real exige duas decisões independentes: desativar o modo de simulação e fornecer a frase de confirmação. Isso reduz o risco de uma configuração incompleta disparar mensagens:
 
 ```env
 DRY_RUN=false
 LIVE_SEND_CONFIRM=I_UNDERSTAND
 ```
 
-Depois execute novamente:
+Os comentários no código ficam reservados para decisões e restrições que não são óbvias. Nomes claros, funções pequenas e testes explicam o restante.
+
+## Estrutura atual
+
+```text
+.
+├── main.py                 # configuração, integração e orquestração
+├── tests/test_main.py      # testes unitários e de segurança
+├── setup.sql               # tabela e políticas do Supabase
+├── .env.example            # configuração sem segredos
+├── requirements.txt
+└── .github/workflows/ci.yml
+```
+
+Para o tamanho atual do projeto, um módulo principal mantém a execução simples. Quando novas integrações ou regras forem adicionadas, a evolução recomendada é separar `config`, `domain`, `supabase_client`, `zapi_client` e `service`, preservando a mesma interface pública coberta pelos testes.
+
+## Configuração
+
+```bash
+python -m venv .venv
+```
+
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+Linux ou macOS:
+
+```bash
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env
+```
+
+Crie a tabela executando `setup.sql` no SQL Editor do Supabase. Depois, preencha o `.env` local. Nunca versione o arquivo `.env`.
+
+## Execução segura
+
+Mantenha no `.env`:
+
+```env
+DRY_RUN=true
+CONTACT_LIMIT=3
+```
+
+Execute:
 
 ```bash
 python main.py
 ```
 
-> [!WARNING]
-> O MVP não mantém um histórico persistente de entregas. Uma nova execução em modo real pode reenviar mensagens aos mesmos contatos. Confirme a lista no modo seguro e execute o envio real apenas uma vez.
+O terminal mostrará apenas uma prévia, com os números mascarados. Nenhuma mensagem será enviada.
 
-## Executar os testes
+## Testes
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-O GitHub Actions executa os testes nas versões suportadas do Python e audita as dependências em cada pull request.
+O mesmo conjunto deve ser executado pelo GitHub Actions antes de uma alteração chegar à branch principal.
 
-## Cuidados com credenciais
+## Uso responsável
 
-- `.env` está no `.gitignore`.
-- O repositório deve conter apenas `.env.example`.
-- Credenciais devem ficar somente em variáveis de ambiente.
-- Chaves `publishable`/`anon` do Supabase não devem acessar a tabela de contatos.
-- RLS e revogação dos papéis públicos fazem parte do `setup.sql`.
-- Não use dados reais em `setup.sql` ou na documentação.
-- O código mascara telefones nos logs.
-- Telefones duplicados são ignorados antes do envio.
+Use somente contatos próprios, fictícios ou explicitamente autorizados. O projeto não implementa gestão de consentimento, opt-out, campanhas ou conformidade completa para uso comercial em produção.
