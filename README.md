@@ -47,6 +47,17 @@ A tabela esperada é `public.contacts`, com os campos:
 | `telefone` | Telefone em formato internacional, somente dígitos |
 | `created_at` | Data de criação do registro |
 
+O `setup.sql` também cria `public.deliveries`:
+
+| Campo | Descrição |
+|---|---|
+| `phone` | Telefone já atendido (chave primária) |
+| `status` | `sent` ou `failed` |
+| `attempts` | Quantas execuções passaram por ali |
+| `sent_at` | Momento do registro |
+
+É essa tabela que impede o mesmo contato de receber a mensagem duas vezes. **Se ela não existir, o worker para com erro** em vez de enviar duplicado — de propósito.
+
 Use apenas contatos fictícios, próprios ou explicitamente autorizados. Não coloque números reais no repositório.
 
 ## Configurar variáveis de ambiente
@@ -80,6 +91,9 @@ ZAPI_CLIENT_TOKEN=seu_client_token_zapi
 
 REQUEST_TIMEOUT=15
 SEND_DELAY_SECONDS=1
+DELIVERY_TABLE=deliveries
+MAX_ATTEMPTS=3
+RETRY_BACKOFF_SECONDS=0.5
 ```
 
 O arquivo `.env` deve ficar apenas na máquina local e não deve ser commitado. `SUPABASE_KEY` precisa ser uma chave **secret/backend** usada somente por este worker; nunca use uma chave `publishable` ou `anon` para acessar os contatos.
@@ -133,8 +147,13 @@ Depois execute novamente:
 python main.py
 ```
 
-> [!WARNING]
-> O MVP não mantém um histórico persistente de entregas. Uma nova execução em modo real pode reenviar mensagens aos mesmos contatos. Confirme a lista no modo seguro e execute o envio real apenas uma vez.
+O worker consulta `public.deliveries` antes de enviar. Contato já registrado como `sent` é ignorado, então rodar o script mais de uma vez **não duplica** a mensagem.
+
+Se o `setup.sql` não tiver sido aplicado, o worker para com erro pedindo a tabela — prefere falhar a mandar duas vezes.
+
+### Retry
+
+Falhas transitórias (`408`, `425`, `429`, `5xx`, timeout de rede) são repetidas com backoff exponencial, até `MAX_ATTEMPTS`. Erro `4xx` **não** é repetido: a requisição está errada e insistir só aumenta o risco de bloqueio do número.
 
 ## Executar os testes
 
@@ -157,4 +176,4 @@ O GitHub Actions executa os testes nas versões suportadas do Python e audita as
 
 ## Como foi feito
 
-O projeto foi escrito com apoio de IA generativa. A divis�o real do trabalho, o que est� verificado e o que n�o est�: [docs/como-foi-feito.md](docs/como-foi-feito.md).
+O projeto foi escrito com apoio de IA generativa. A divis�o real do trabalho, o que est� verificado e o que n�o est�: [docs/como-foi-feito.md](docs/como-foi-feito.md).

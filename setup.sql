@@ -24,3 +24,22 @@ revoke all privileges on table public.contacts
 
 revoke all privileges on sequence public.contacts_id_seq
   from anon, authenticated;
+
+-- Registro de entregas. Existe por um motivo específico: sem esta tabela, rodar
+-- o worker duas vezes manda a mesma mensagem de novo para o mesmo contato.
+-- A chave primária em `phone` é o que impede a duplicata.
+create table if not exists public.deliveries (
+  phone text primary key,
+  status text not null default 'sent' check (status in ('sent', 'failed')),
+  attempts integer not null default 1,
+  sent_at timestamptz not null default now()
+);
+
+comment on table public.deliveries is
+  'Controle de reenvio do worker. Uma linha por telefone já atendido.';
+
+alter table public.deliveries enable row level security;
+
+revoke all privileges on table public.deliveries
+  from anon, authenticated;
+

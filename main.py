@@ -13,6 +13,12 @@ MESSAGE_TEMPLATE = "Olá, {nome} tudo bem com você?"
 CONTACT_LIMIT_MAX = 3
 DEFAULT_REQUEST_TIMEOUT = 15.0
 DEFAULT_SEND_DELAY_SECONDS = 1.0
+DEFAULT_DELIVERY_TABLE = "deliveries"
+DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_BACKOFF_SECONDS = 0.5
+# Só faz sentido repetir o que pode melhorar sozinho. 4xx (fora 408/425/429)
+# é erro de requisição: repetir só gasta tempo e aumenta o risco de bloqueio.
+RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 TRUE_VALUES = {"1", "true", "yes", "y", "sim", "s"}
 FALSE_VALUES = {"0", "false", "no", "n", "nao", "não"}
 LIVE_SEND_CONFIRMATION = "I_UNDERSTAND"
@@ -201,7 +207,14 @@ def send_text_message(
     phone: str,
     message: str,
     timeout: float,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    backoff_seconds: float = DEFAULT_BACKOFF_SECONDS,
 ) -> None:
+    """Envia uma mensagem, repetindo apenas falhas transitórias.
+
+    Repetir um erro definitivo (4xx, payload inválido) não resolve e pode
+    piorar: a Z-API conta tentativas e bloqueia número que insiste.
+    """
     url = f"https://api.z-api.io/instances/{instance_id}/token/{token}/send-text"
     headers = {
         "Client-Token": client_token,
@@ -212,13 +225,120 @@ def send_text_message(
         "message": message,
     }
 
+    last_error: str = "erro desconhecido"
+
+    for attempt in range(1, max_attempts + 1):
+        is_last_attempt = attempt == max_attempts
+
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        except requests.RequestException as exc:
+            last_error = f"falha de rede ({type(exc).__name__})"
+        else:
+            if response.ok:
+                return
+
+            last_error = f"HTTP {response.status_code}"
+
+            if response.status_code not in RETRYABLE_STATUS_CODES:
+                raise RuntimeError(f"Z-API retornou HTTP {response.status_code}.")
+
+        if is_last_attempt:
+            break
+
+        wait = backoff_seconds * (2 ** (attempt - 1))
+        logging.warning(
+            "Envio falhou (%s). Tentativa %d/%d, repetindo em %.1fs.",
+            last_error,
+            attempt,
+            max_attempts,
+            wait,
+        )
+        if wait > 0:
+            time.sleep(wait)
+
+    raise RuntimeError(f"Falha ao enviar mensagem pela Z-API após {max_attempts} tentativa(s): {last_error}.")
+
+
+def was_delivered(
+    supabase_url: str,
+    supabase_key: str,
+    table_name: str,
+    phone: str,
+    timeout: float,
+) -> bool:
+    """Consulta se este telefone já recebeu a mensagem em uma execução anterior."""
+    url = f"{supabase_url.rstrip('/')}/rest/v1/{table_name}"
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}",
+    }
+    params = {
+        "phone": f"eq.{phone}",
+        "status": "eq.sent",
+        "select": "phone",
+        "limit": 1,
+    }
+
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        response = requests.get(url, headers=headers, params=params, timeout=timeout)
     except requests.RequestException as exc:
-        raise RuntimeError("Falha ao enviar mensagem pela Z-API.") from exc
+        raise RuntimeError("Falha ao consultar entregas no Supabase.") from exc
+
+    if response.status_code == 404:
+        raise RuntimeError(
+            f"Tabela '{table_name}' não existe no Supabase. "
+            "Execute novamente o setup.sql atualizado antes de enviar."
+        )
+    if not response.ok:
+        raise RuntimeError(
+            f"Supabase retornou HTTP {response.status_code} ao consultar entregas."
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Supabase retornou uma resposta inválida ao consultar entregas.") from exc
+
+    if not isinstance(data, list):
+        raise RuntimeError("Resposta inesperada do Supabase ao consultar entregas.")
+
+    return len(data) > 0
+
+
+def mark_delivered(
+    supabase_url: str,
+    supabase_key: str,
+    table_name: str,
+    phone: str,
+    timeout: float,
+) -> None:
+    """Registra a entrega. Chave primária em `phone` impede duplicata."""
+    url = f"{supabase_url.rstrip('/')}/rest/v1/{table_name}"
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal",
+    }
+    params = {"on_conflict": "phone"}
+    payload = {"phone": phone, "status": "sent"}
+
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            params=params,
+            json=payload,
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("Falha ao registrar entrega no Supabase.") from exc
 
     if not response.ok:
-        raise RuntimeError(f"Z-API retornou HTTP {response.status_code}.")
+        raise RuntimeError(
+            f"Supabase retornou HTTP {response.status_code} ao registrar a entrega."
+        )
 
 
 def main() -> None:
@@ -241,6 +361,13 @@ def main() -> None:
     send_delay = get_float_env(
         "SEND_DELAY_SECONDS",
         default=DEFAULT_SEND_DELAY_SECONDS,
+        minimum=0.0,
+    )
+    delivery_table = os.getenv("DELIVERY_TABLE", DEFAULT_DELIVERY_TABLE)
+    max_attempts = get_int_env("MAX_ATTEMPTS", default=DEFAULT_MAX_ATTEMPTS)
+    backoff_seconds = get_float_env(
+        "RETRY_BACKOFF_SECONDS",
+        default=DEFAULT_BACKOFF_SECONDS,
         minimum=0.0,
     )
 
@@ -274,12 +401,31 @@ def main() -> None:
             print(f"[DRY_RUN] {name} ({safe_phone}): {message}")
             continue
 
+        if was_delivered(
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+            table_name=delivery_table,
+            phone=phone,
+            timeout=request_timeout,
+        ):
+            print(f"Ignorado, já entregue: {name} ({safe_phone}).")
+            continue
+
         send_text_message(
             instance_id=zapi_instance_id,
             token=zapi_token,
             client_token=zapi_client_token,
             phone=phone,
             message=message,
+            timeout=request_timeout,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+        mark_delivered(
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+            table_name=delivery_table,
+            phone=phone,
             timeout=request_timeout,
         )
         print(f"Mensagem enviada para {name} ({safe_phone}).")
