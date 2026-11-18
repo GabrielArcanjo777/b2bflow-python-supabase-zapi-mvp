@@ -1,22 +1,23 @@
 # Como foi feito
 
-## Declaração de uso de IA
+## Declaração
 
-Este projeto foi escrito com apoio de IA generativa. Está escrito aqui, no repositório, em vez de aparecer como surpresa numa conversa.
+Este projeto foi desenvolvido com **agentes de IA**, sob minha direção. Eu defini o problema e as regras de segurança; os agentes implementaram boa parte do código.
+
+É um **projeto de estudo** — o objetivo é aprender integração entre serviços, tratamento de erro e postura defensiva ao lidar com dado sensível, não operar um disparador de mensagens.
 
 ## Divisão do trabalho
 
-**Humano (eu):**
-- defini o problema: ler contatos autorizados e enviar uma mensagem personalizada, com trava de segurança
+**Eu:**
+- defini o objetivo: ler contatos autorizados e enviar uma mensagem personalizada com trava de segurança
 - decidi que `DRY_RUN=true` seria o padrão e que envio real exigiria confirmação digitada
-- escolhi exigir RLS no Supabase e revogar os papéis públicos da tabela
-- decidi que telefone apareceria mascarado nos logs
-- escrevi e revisei a documentação
+- exigi RLS no Supabase e revogação dos papéis públicos
+- decidi que telefone sairia mascarado nos logs
+- revisei a documentação
 
-**IA:**
-- escreveu a maior parte do código
-- propôs a estrutura de módulos, os testes e o tratamento de variável de ambiente
-- sugeriu as proteções de segurança a partir do meu pedido
+**Agentes:**
+- implementaram a leitura de contatos, o envio, os testes e o tratamento de variáveis de ambiente
+- propuseram as proteções a partir dos requisitos que eu passei
 
 ## O que está verificado
 
@@ -27,13 +28,12 @@ Este projeto foi escrito com apoio de IA generativa. Está escrito aqui, no repo
 | Dependências | `pip-audit`, no CI |
 | Compatibilidade | Python 3.11 e 3.13, no CI |
 
-## O que não está verificado
+## O que ainda não está verificado
 
 - nenhuma execução real contra o Supabase ou a Z-API em ambiente de teste
 - nenhum teste de carga
-- nenhum reenvio controlado — **o script não sabe se já mandou** (ver `demandas/001-idempotencia-e-retry.md`)
 - nenhuma revisão de código por terceiros
 
-## Consequência
+## Conclusão
 
-Use com contatos próprios ou explicitamente autorizados. Não use em disparo em massa. O controle de duplicidade é humano, não do sistema — isso é uma limitação conhecida, não um bug escondido.
+Projeto pequeno, feito para estudar. As travas de segurança (`DRY_RUN`, confirmação explícita, RLS, log mascarado) são o que interessa aqui — o envio em si é a parte trivial.
