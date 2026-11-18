@@ -154,3 +154,7 @@ O GitHub Actions executa os testes nas vers√µes suportadas do Python e audita as
 - N√£o use dados reais em `setup.sql` ou na documenta√ß√£o.
 - O c√≥digo mascara telefones nos logs.
 - Telefones duplicados s√£o ignorados antes do envio.
+
+## Como foi feito
+
+O projeto foi escrito com apoio de IA generativa. A divis„o real do trabalho, o que est· verificado e o que n„o est·: [docs/como-foi-feito.md](docs/como-foi-feito.md).
