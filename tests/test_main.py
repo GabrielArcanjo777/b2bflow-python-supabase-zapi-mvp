@@ -4,6 +4,8 @@ import os
 import unittest
 from unittest.mock import Mock, patch
 
+import requests
+
 import main
 
 
@@ -166,6 +168,47 @@ class RetryTests(unittest.TestCase):
                 max_attempts=2,
                 backoff_seconds=0.1,
             )
+
+        self.assertEqual(post.call_count, 2)
+
+    @patch("main.time.sleep")
+    @patch("main.requests.post")
+    def test_read_timeout_is_not_retried(self, post: Mock, sleep: Mock) -> None:
+        # Timeout de leitura: a Z-API recebeu o pedido e pode ter enviado.
+        # Repetir aqui é o jeito mais fácil de mandar a mensagem duas vezes.
+        post.side_effect = requests.ReadTimeout()
+
+        with self.assertRaisesRegex(RuntimeError, "resultado desconhecido"):
+            main.send_text_message(
+                instance_id="i",
+                token="t",
+                client_token="c",
+                phone="5521999990000",
+                message="oi",
+                timeout=5,
+                max_attempts=3,
+                backoff_seconds=0.1,
+            )
+
+        self.assertEqual(post.call_count, 1)
+        sleep.assert_not_called()
+
+    @patch("main.time.sleep")
+    @patch("main.requests.post")
+    def test_connect_timeout_is_retried(self, post: Mock, sleep: Mock) -> None:
+        # Timeout de conexão: o pedido nem chegou. Repetir é seguro.
+        post.side_effect = [requests.ConnectTimeout(), Mock(ok=True, status_code=200)]
+
+        main.send_text_message(
+            instance_id="i",
+            token="t",
+            client_token="c",
+            phone="5521999990000",
+            message="oi",
+            timeout=5,
+            max_attempts=3,
+            backoff_seconds=0.1,
+        )
 
         self.assertEqual(post.call_count, 2)
 
