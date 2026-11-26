@@ -1,179 +1,125 @@
-# b2bflow Python + Supabase + Z-API
+# b2bflow — Python + Supabase + Z-API
 
-MVP técnico em Python para ler contatos autorizados no Supabase e enviar uma mensagem personalizada via Z-API.
+[![CI](https://github.com/GabrielArcanjo777/b2bflow-python-supabase-zapi-mvp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/GabrielArcanjo777/b2bflow-python-supabase-zapi-mvp/actions/workflows/ci.yml)
 
-A mensagem enviada é:
+Worker em Python que lê até três contatos autorizados numa tabela do Supabase e manda para cada um, via Z-API (WhatsApp), a mensagem:
 
 ```txt
 Olá, <nome_contato> tudo bem com você?
 ```
 
-O projeto roda localmente, usa variáveis de ambiente para credenciais e vem com `DRY_RUN=true` para testar sem enviar mensagens reais.
+Projeto de estudo. O envio é a parte simples; o que interessa aqui são as travas para **não** mandar mensagem errada, duplicada ou para quem não autorizou.
 
-## Tecnologias
+## O problema
 
-- Python
-- Supabase REST API
-- Z-API
-- python-dotenv
-- requests
+Um script que dispara mensagem real tem três jeitos fáceis de dar errado:
 
-## Estrutura
+1. rodar sem querer em modo real;
+2. rodar duas vezes e mandar duas vezes;
+3. vazar a chave do banco ou o telefone de alguém.
 
-```txt
-.
-├── main.py
-├── requirements.txt
-├── setup.sql
-├── tests/
-├── .github/workflows/ci.yml
-├── .env.example
-├── .gitignore
-└── README.md
+Cada trava abaixo responde a um desses.
+
+## Como funciona
+
+```text
+.env ──► valida configuração ──► DRY_RUN? ── sim ──► só imprime o que seria enviado
+                                     │
+                                    não (exige LIVE_SEND_CONFIRM=I_UNDERSTAND)
+                                     │
+Supabase: contacts ──► até 3 contatos, sem telefone repetido
+                                     │
+         para cada contato: já está em deliveries como 'sent'? ── sim ──► pula
+                                     │ não
+                        Z-API send-text (retry só no que é seguro repetir)
+                                     │
+                         grava em deliveries (phone = chave primária)
 ```
 
-## Configurar a tabela no Supabase
+Todo o código está em [`main.py`](main.py); os testes em [`tests/test_main.py`](tests/test_main.py).
 
-No Supabase, acesse **SQL Editor** e execute o conteúdo do arquivo `setup.sql`.
+## Travas de segurança
 
-O script habilita **Row Level Security (RLS)** e remove o acesso dos papéis públicos `anon` e `authenticated`. Se a tabela já existia, execute novamente a versão atual do `setup.sql` para aplicar esse endurecimento.
-
-A tabela esperada é `public.contacts`, com os campos:
-
-| Campo | Descrição |
+| Trava | Onde |
 |---|---|
-| `id` | Identificador gerado pelo banco |
-| `nome` | Nome usado para personalizar a mensagem |
-| `telefone` | Telefone em formato internacional, somente dígitos |
-| `created_at` | Data de criação do registro |
+| `DRY_RUN=true` é o padrão; valor inválido para a execução | `get_bool_env` |
+| Envio real exige `DRY_RUN=false` **e** `LIVE_SEND_CONFIRM=I_UNDERSTAND` | `require_live_send_confirmation` |
+| Chave `anon`/`publishable` do Supabase é recusada | `validate_supabase_backend_key` |
+| RLS ligado e acesso de `anon`/`authenticated` revogado nas duas tabelas | `setup.sql` |
+| Tabela `deliveries` impede reenvio; se ela não existir, o worker para | `was_delivered`, `mark_delivered` |
+| Retry só em `408/425/429/5xx` e em timeout de **conexão** | `send_text_message` |
+| Timeout de **leitura** para o worker: a mensagem pode ter saído | `send_text_message` |
+| Telefone mascarado no log (`*********0000`) | `mask_phone` |
 
-O `setup.sql` também cria `public.deliveries`:
+## Como rodar
 
-| Campo | Descrição |
-|---|---|
-| `phone` | Telefone já atendido (chave primária) |
-| `status` | `sent` ou `failed` |
-| `attempts` | Quantas execuções passaram por ali |
-| `sent_at` | Momento do registro |
-
-É essa tabela que impede o mesmo contato de receber a mensagem duas vezes. **Se ela não existir, o worker para com erro** em vez de enviar duplicado — de propósito.
-
-Use apenas contatos fictícios, próprios ou explicitamente autorizados. Não coloque números reais no repositório.
-
-## Configurar variáveis de ambiente
-
-Copie o arquivo de exemplo:
+1. No **SQL Editor** do Supabase, execute [`setup.sql`](setup.sql). Ele cria `contacts` e `deliveries` com RLS.
+2. Cadastre só contatos fictícios, seus ou que autorizaram.
+3. Configure o ambiente:
 
 ```bash
-cp .env.example .env
-```
-
-No Windows, se preferir:
-
-```powershell
-copy .env.example .env
-```
-
-Preencha o `.env` local:
-
-```env
-SUPABASE_URL=https://seu-projeto.supabase.co
-SUPABASE_KEY=sua_chave_secreta_de_backend
-SUPABASE_TABLE=contacts
-
-CONTACT_LIMIT=3
-DRY_RUN=true
-LIVE_SEND_CONFIRM=
-
-ZAPI_INSTANCE_ID=sua_instancia
-ZAPI_TOKEN=seu_token_zapi
-ZAPI_CLIENT_TOKEN=seu_client_token_zapi
-
-REQUEST_TIMEOUT=15
-SEND_DELAY_SECONDS=1
-DELIVERY_TABLE=deliveries
-MAX_ATTEMPTS=3
-RETRY_BACKOFF_SECONDS=0.5
-```
-
-O arquivo `.env` deve ficar apenas na máquina local e não deve ser commitado. `SUPABASE_KEY` precisa ser uma chave **secret/backend** usada somente por este worker; nunca use uma chave `publishable` ou `anon` para acessar os contatos.
-
-## Instalar dependências
-
-Crie e ative um ambiente virtual:
-
-```bash
+cp .env.example .env          # Windows: copy .env.example .env
 python -m venv .venv
-```
-
-Windows:
-
-```powershell
-.venv\Scripts\activate
-```
-
-Linux/macOS:
-
-```bash
-source .venv/bin/activate
-```
-
-Instale as dependências:
-
-```bash
+source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Executar o projeto
-
-Com `DRY_RUN=true` no `.env`, rode:
+4. Preencha o `.env`. `SUPABASE_KEY` precisa ser uma chave **secreta de backend**.
+5. Rode em modo seguro (padrão):
 
 ```bash
 python main.py
 ```
 
-Nesse modo seguro, o projeto busca até três contatos, monta a mensagem personalizada e mostra no terminal o que seria enviado. Nenhuma mensagem real é disparada. Valores inválidos em `DRY_RUN`, como erros de digitação, interrompem a execução.
+Saída esperada: uma linha `[DRY_RUN] Nome (*********1234): Olá, Nome tudo bem com você?` por contato.
 
-Para enviar mensagens reais, use apenas contatos próprios ou autorizados, altere no `.env`:
+6. Envio real, só com contatos autorizados — no `.env`:
 
 ```env
 DRY_RUN=false
 LIVE_SEND_CONFIRM=I_UNDERSTAND
 ```
 
-Depois execute novamente:
+Variáveis opcionais (`REQUEST_TIMEOUT`, `SEND_DELAY_SECONDS`, `MAX_ATTEMPTS`, `RETRY_BACKOFF_SECONDS`, `DELIVERY_TABLE`) estão em [`.env.example`](.env.example).
 
-```bash
-python main.py
-```
-
-O worker consulta `public.deliveries` antes de enviar. Contato já registrado como `sent` é ignorado, então rodar o script mais de uma vez **não duplica** a mensagem.
-
-Se o `setup.sql` não tiver sido aplicado, o worker para com erro pedindo a tabela — prefere falhar a mandar duas vezes.
-
-### Retry
-
-Falhas transitórias (`408`, `425`, `429`, `5xx`, timeout de rede) são repetidas com backoff exponencial, até `MAX_ATTEMPTS`. Erro `4xx` **não** é repetido: a requisição está errada e insistir só aumenta o risco de bloqueio do número.
-
-## Executar os testes
+## Testes
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-O GitHub Actions executa os testes nas versões suportadas do Python e audita as dependências em cada pull request.
+Os testes não usam rede: `requests` é substituído por mocks. O CI roda em Python 3.11 e 3.13 e audita as dependências com `pip-audit`.
 
-## Cuidados com credenciais
+## Limitações conhecidas
 
-- `.env` está no `.gitignore`.
-- O repositório deve conter apenas `.env.example`.
-- Credenciais devem ficar somente em variáveis de ambiente.
-- Chaves `publishable`/`anon` do Supabase não devem acessar a tabela de contatos.
-- RLS e revogação dos papéis públicos fazem parte do `setup.sql`.
-- Não use dados reais em `setup.sql` ou na documentação.
-- O código mascara telefones nos logs.
-- Telefones duplicados são ignorados antes do envio.
+- **Nunca rodou contra Supabase e Z-API reais em ambiente de teste.** Tudo que está verificado está verificado com mocks.
+- **Sempre os mesmos três.** A consulta pega os 3 primeiros por `created_at` e não filtra quem já recebeu. Depois que eles recebem, as próximas execuções só pulam — o 4º contato nunca é alcançado.
+- **Janela entre enviar e registrar.** Se o envio der certo e a gravação em `deliveries` falhar, a próxima execução manda de novo.
+- **`5xx` ainda é repetido.** Um `504` pode significar que a Z-API enviou e só a resposta se perdeu; hoje isso é tratado como falha transitória.
+- **Falha não é registrada.** As colunas `status='failed'` e `attempts` existem em `setup.sql`, mas o worker só grava entregas bem-sucedidas. Um erro definitivo interrompe a execução.
+- **`DRY_RUN` não consulta `deliveries`.** O modo seguro mostra também quem seria pulado no envio real.
+
+## O que eu aprendi
+
+- **Padrão seguro é decisão de projeto.** Deixar `DRY_RUN=true` por padrão e exigir uma confirmação digitada custa uma linha e elimina o pior erro possível.
+- **Idempotência precisa de estado.** Avisar "rode só uma vez" no README não impede nada. Uma chave primária em `deliveries.phone` impede.
+- **Nem toda falha pode ser repetida.** Repetir um `429` é correto; repetir depois de um timeout de leitura pode mandar a mensagem duas vezes. A diferença é saber se o pedido chegou ao servidor ([demanda 002](demandas/002-timeout-sem-reenvio/README.md)).
+- **Falhar é melhor que duplicar.** Se a tabela de entregas não existe, o worker para em vez de seguir sem controle.
+- **Segredo também se protege no código.** Recusar chave `anon` e mascarar telefone no log são verificações pequenas que não dependem de alguém lembrar.
+
+## Estrutura
+
+```text
+main.py                 todo o worker
+tests/test_main.py      testes com mocks (sem rede)
+setup.sql               tabelas, RLS e revogação de acesso público
+.env.example            variáveis, sem valores reais
+AGENTS.md               regras para quem (pessoa ou agente) for mexer no código
+docs/                   histórico, decisões, referências, como foi feito
+demandas/               pedidos com especificação, evidência e entrega
+.agents/skills/         procedimentos reutilizáveis
+```
 
 ## Como foi feito
 
-O projeto foi escrito com apoio de IA generativa. A divis�o real do trabalho, o que est� verificado e o que n�o est�: [docs/como-foi-feito.md](docs/como-foi-feito.md).
+Escrito com apoio de IA generativa, sob minha direção. A divisão do trabalho e o que está ou não verificado: [`docs/como-foi-feito.md`](docs/como-foi-feito.md). O que mudou ao longo do tempo: [`docs/historico.md`](docs/historico.md). Por que cada trava existe: [`docs/decisoes.md`](docs/decisoes.md).

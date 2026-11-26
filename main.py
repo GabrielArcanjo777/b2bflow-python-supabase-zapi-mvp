@@ -232,8 +232,16 @@ def send_text_message(
 
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=timeout)
-        except requests.RequestException as exc:
+        except requests.ConnectTimeout as exc:
+            # A conexão nem abriu: o pedido não chegou à Z-API. Repetir é seguro.
             last_error = f"falha de rede ({type(exc).__name__})"
+        except requests.RequestException as exc:
+            # O pedido pode ter chegado e a mensagem pode ter saído. Repetir
+            # arrisca mandar duas vezes; parar e deixar uma pessoa conferir.
+            raise RuntimeError(
+                f"Envio com resultado desconhecido ({type(exc).__name__}): a mensagem "
+                "pode ter sido entregue. Confira no WhatsApp antes de rodar de novo."
+            ) from exc
         else:
             if response.ok:
                 return
